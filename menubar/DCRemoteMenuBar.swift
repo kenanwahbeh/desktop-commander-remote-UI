@@ -428,7 +428,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(statusMenuItem)
 
         if running {
-            let idText = "  ID: " + String(deviceId.prefix(8)) + "..."
+            let idText = selfHosted ? "  " + selfHostHost : "  ID: " + String(deviceId.prefix(8)) + "..."
             let idItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
             idItem.attributedTitle = NSAttributedString(string: idText, attributes: [
                 .foregroundColor: NSColor.tertiaryLabelColor,
@@ -440,10 +440,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
-        // Dashboard
-        let dashboard = NSMenuItem(title: "Dashboard", action: #selector(openDashboard), keyEquivalent: "d")
-        dashboard.target = self
-        menu.addItem(dashboard)
+        // Endpoint: original relay or the self-hosted server in selfhost/
+        let endpoint = NSMenuItem(title: "Endpoint", action: nil, keyEquivalent: "")
+        let endpointMenu = NSMenu()
+        let relayItem = NSMenuItem(title: "Original (mcp.desktopcommander.app)", action: #selector(useRelayEndpoint), keyEquivalent: "")
+        relayItem.target = self
+        relayItem.state = selfHosted ? .off : .on
+        endpointMenu.addItem(relayItem)
+        let selfItem = NSMenuItem(title: "Self-hosted (\(selfHostHost))", action: #selector(useSelfHostedEndpoint), keyEquivalent: "")
+        selfItem.target = self
+        selfItem.state = selfHosted ? .on : .off
+        endpointMenu.addItem(selfItem)
+        endpoint.submenu = endpointMenu
+        menu.addItem(endpoint)
+
+        // Dashboard (the relay's web UI; the self-hosted server has none)
+        if !selfHosted {
+            let dashboard = NSMenuItem(title: "Dashboard", action: #selector(openDashboard), keyEquivalent: "d")
+            dashboard.target = self
+            menu.addItem(dashboard)
+        }
 
         // Logs
         let logs = NSMenuItem(title: "Logs", action: #selector(openLogs), keyEquivalent: "l")
@@ -469,7 +485,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
-        let copyId = NSMenuItem(title: "Copy Device ID", action: #selector(copyDeviceId), keyEquivalent: "c")
+        let copyId = NSMenuItem(title: selfHosted ? "Copy Connector URL" : "Copy Device ID", action: #selector(copyDeviceId), keyEquivalent: "c")
         copyId.target = self
         menu.addItem(copyId)
 
@@ -562,7 +578,60 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func copyDeviceId() {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(deviceId, forType: .string)
+        NSPasteboard.general.setString(selfHosted ? selfHostConnectorURL : deviceId, forType: .string)
+    }
+
+    // MARK: - Endpoint selection
+    // The LaunchAgent's ProgramArguments are the single source of truth for the
+    // active endpoint: selfhost/run.sh = self-hosted, "index.js remote" = relay.
+
+    var agentPlist: NSMutableDictionary? { NSMutableDictionary(contentsOfFile: plistPath) }
+
+    var repoDir: String { (agentPlist?["WorkingDirectory"] as? String) ?? FileManager.default.currentDirectoryPath }
+
+    var selfHostScript: String { repoDir + "/selfhost/run.sh" }
+
+    var selfHosted: Bool {
+        ((agentPlist?["ProgramArguments"] as? [String]) ?? []).contains(selfHostScript)
+    }
+
+    var selfHostEnv: [String: String] {
+        guard let text = try? String(contentsOfFile: repoDir + "/selfhost/.env", encoding: .utf8) else { return [:] }
+        var env: [String: String] = [:]
+        for line in text.split(separator: "\n") {
+            let parts = line.split(separator: "=", maxSplits: 1)
+            if parts.count == 2 { env[String(parts[0]).trimmingCharacters(in: .whitespaces)] = String(parts[1]).trimmingCharacters(in: .whitespaces) }
+        }
+        return env
+    }
+
+    var selfHostHost: String { selfHostEnv["DC_PUBLIC_HOST"] ?? "localhost:" + (selfHostEnv["DC_PORT"] ?? "8765") }
+
+    var selfHostConnectorURL: String {
+        let scheme = selfHostEnv["DC_PUBLIC_HOST"] == nil ? "http" : "https"
+        return "\(scheme)://\(selfHostHost)/\(selfHostEnv["DC_SECRET"] ?? "")/mcp"
+    }
+
+    @objc func useRelayEndpoint() { setEndpoint(selfHosted: false) }
+    @objc func useSelfHostedEndpoint() { setEndpoint(selfHosted: true) }
+
+    func setEndpoint(selfHosted wantSelfHosted: Bool) {
+        guard wantSelfHosted != selfHosted, let plist = agentPlist else { return }
+        let defaults = UserDefaults.standard
+        if wantSelfHosted {
+            // Remember the relay arguments (account email etc.) so switching back restores them
+            defaults.set(plist["ProgramArguments"], forKey: "relayArguments")
+            plist["ProgramArguments"] = ["/bin/sh", selfHostScript]
+        } else {
+            plist["ProgramArguments"] = defaults.stringArray(forKey: "relayArguments")
+                ?? ["/opt/homebrew/bin/node", repoDir + "/dist/index.js", "remote", "--persist-session"]
+        }
+        let wasRunning = isRunning()
+        if wasRunning { runShell("/bin/launchctl", ["bootout", "gui/\(getuid())", plistPath]) }
+        plist.write(toFile: plistPath, atomically: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            self?.startDevice()
+        }
     }
 
     @objc func quitApp() {

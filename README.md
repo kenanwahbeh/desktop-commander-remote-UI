@@ -71,6 +71,17 @@ Get your **Device ID** from the menubar: click the monitor icon → **Copy Devic
 
 ---
 
+## Endpoint: original relay or self-hosted
+
+The menu bar has an **Endpoint** submenu:
+
+- **Original** — the device connects through `mcp.desktopcommander.app` (Desktop Commander account, monthly tool-call quota).
+- **Self-hosted** — `selfhost/run.sh` serves this repo's MCP server over Streamable HTTP on `localhost:8765`. No account and no call quota.
+
+Switching rewrites the LaunchAgent and restarts it. For self-hosted mode, copy `selfhost/.env.example` to `selfhost/.env`, set `DC_SECRET` and `DC_PUBLIC_HOST`, and point a reverse proxy or tunnel (for example a Cloudflare Tunnel public hostname) at `http://localhost:8765`. **Copy Connector URL** in the menu then gives `https://<DC_PUBLIC_HOST>/<DC_SECRET>/mcp` to add as a custom connector. The secret path is the only access control, so keep the URL private.
+
+---
+
 ## Screenshots
 
 | Dark Mode | Light Mode |
